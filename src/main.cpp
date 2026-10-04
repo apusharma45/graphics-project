@@ -31,11 +31,13 @@ constexpr int CIRCLE_SEGMENTS = 96;
 
 constexpr float ROBOT_WIDTH = 2.0f; // full arm-to-arm width
 constexpr float ROBOT_HEIGHT = 3.0f;
-constexpr float ROBOT_COLLISION_RADIUS = 1.2f; // encloses the XZ footprint
+constexpr float ROBOT_HALF_WIDTH = ROBOT_WIDTH / 2.0f;
+constexpr float ROBOT_HALF_DEPTH = 0.60f;
+constexpr float ROBOT_BALL_COLLISION_RADIUS = 0.62f;
 constexpr float ROBOT_MOVE_SPEED = 5.0f; // world units per second
 const float ROBOT_TURN_SPEED = glm::radians(80.0f); // radians per second
-constexpr float BALL_RADIUS = 0.45f;
-constexpr float KICK_DISTANCE = ROBOT_COLLISION_RADIUS + BALL_RADIUS + 0.35f;
+constexpr float BALL_RADIUS = 0.28f;
+constexpr float KICK_DISTANCE = ROBOT_BALL_COLLISION_RADIUS + BALL_RADIUS + 0.35f;
 constexpr float KICK_SPEED = 12.0f; // world units per second
 constexpr float BALL_FRICTION = 4.0f; // shot deceleration, units per second squared
 bool ballIsShot = false;
@@ -52,7 +54,7 @@ int positiveGoalScore = 0;
 int negativeGoalScore = 0;
 float goalBannerTimeRemaining = 0.0f;
 constexpr float POST_RESTITUTION = 0.5f;
-constexpr float DRIBBLE_DISTANCE = ROBOT_COLLISION_RADIUS + BALL_RADIUS + 0.10f;
+constexpr float DRIBBLE_DISTANCE = ROBOT_BALL_COLLISION_RADIUS + BALL_RADIUS + 0.10f;
 
 std::string scoreTitle()
 {
@@ -70,7 +72,7 @@ void resetBallAfterGoal()
     {
         if (glm::length(glm::vec2(candidate.x - robotPosition.x,
                                    candidate.z - robotPosition.z)) >
-            ROBOT_COLLISION_RADIUS + BALL_RADIUS + 0.1f)
+            ROBOT_BALL_COLLISION_RADIUS + BALL_RADIUS + 0.1f)
         {
             ballPosition = candidate;
             break;
@@ -168,7 +170,7 @@ int textureEnabledLocation = -1;
 constexpr float DEFAULT_CAMERA_AZIMUTH = 78.0f;
 constexpr float DEFAULT_CAMERA_ELEVATION = 42.0f;
 constexpr float DEFAULT_CAMERA_DISTANCE = 65.0f;
-constexpr float CAMERA_MIN_DISTANCE = 55.0f;
+constexpr float CAMERA_MIN_DISTANCE = 22.0f;
 constexpr float CAMERA_MAX_DISTANCE = 105.0f;
 constexpr float CAMERA_MIN_ELEVATION = 25.0f;
 constexpr float CAMERA_MAX_ELEVATION = 80.0f;
@@ -181,9 +183,9 @@ constexpr float PLAYER_CAMERA_FOV = 65.0f;
 constexpr float PLAYER_CAMERA_MIN_FOV = 35.0f;
 constexpr float PLAYER_CAMERA_MAX_FOV = 80.0f;
 constexpr float DEFAULT_PLAYER_LOOK_PITCH = -12.0f;
-constexpr float PLAYER_LOOK_MIN_PITCH = -35.0f;
+constexpr float PLAYER_LOOK_MIN_PITCH = -85.0f;
 constexpr float PLAYER_LOOK_MAX_PITCH = 50.0f;
-constexpr float PLAYER_LOOK_MAX_YAW = 80.0f;
+constexpr float PLAYER_LOOK_MAX_YAW = 85.0f;
 
 void addVertex(std::vector<float>& vertices, const glm::vec3& position,
                const glm::vec3& normal)
@@ -205,12 +207,18 @@ void updateRobot(float moveInput, float turnInput, float deltaTime)
     const glm::vec3 forward(std::sin(robotYaw), 0.0f, std::cos(robotYaw));
     robotPosition += forward * moveInput * ROBOT_MOVE_SPEED * deltaTime;
 
-    // A circle enclosing the robot stays inside all four playing lines.
-    // Clamp each axis separately so diagonal movement can slide along an edge.
+    // Rotate the robot's simple XZ footprint into world-aligned extents. This
+    // keeps the body inside the court without an oversized circular margin.
+    const float absoluteCosine = std::abs(std::cos(robotYaw));
+    const float absoluteSine = std::abs(std::sin(robotYaw));
+    const float extentX = ROBOT_HALF_WIDTH * absoluteCosine
+                        + ROBOT_HALF_DEPTH * absoluteSine;
+    const float extentZ = ROBOT_HALF_WIDTH * absoluteSine
+                        + ROBOT_HALF_DEPTH * absoluteCosine;
     robotPosition.x = glm::clamp(robotPosition.x,
-        COURT_MIN_X + ROBOT_COLLISION_RADIUS, COURT_MAX_X - ROBOT_COLLISION_RADIUS);
+        COURT_MIN_X + extentX, COURT_MAX_X - extentX);
     robotPosition.z = glm::clamp(robotPosition.z,
-        COURT_MIN_Z + ROBOT_COLLISION_RADIUS, COURT_MAX_Z - ROBOT_COLLISION_RADIUS);
+        COURT_MIN_Z + extentZ, COURT_MAX_Z - extentZ);
     robotPosition.y = 0.0f;
 }
 
@@ -304,7 +312,7 @@ void updateBallStep(float deltaTime)
     const glm::vec2 offset(ballPosition.x - robotPosition.x,
                            ballPosition.z - robotPosition.z);
     const float distance = glm::length(offset);
-    const float contactDistance = ROBOT_COLLISION_RADIUS + BALL_RADIUS;
+    const float contactDistance = ROBOT_BALL_COLLISION_RADIUS + BALL_RADIUS;
     if (distance < contactDistance)
     {
     // Resolve penetration along the contact normal, not a fixed world axis.
@@ -473,7 +481,8 @@ void drawCube(int cubeFirst, int modelLocation, int colorLocation,
     drawMesh(cubeFirst, 36, modelLocation, colorLocation, model, color);
 }
 
-void drawRobot(int cubeFirst, int modelLocation, int colorLocation)
+void drawRobot(int cubeFirst, int modelLocation, int colorLocation,
+               bool firstPersonView = false)
 {
     glm::mat4 root = glm::translate(glm::mat4(1.0f), robotPosition);
     root = glm::rotate(root, robotYaw, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -487,17 +496,23 @@ void drawRobot(int cubeFirst, int modelLocation, int colorLocation)
     };
     const glm::vec3 blue(0.10f, 0.35f, 0.85f), gray(0.60f, 0.67f, 0.75f);
     const glm::vec3 dark(0.08f, 0.12f, 0.20f), front(0.15f, 0.85f, 1.0f);
+    // A head-mounted camera can see the body below it, but not the geometry
+    // containing the camera itself.
     part({0, 0.57f, 0}, {0.60f, 0.34f, 0.65f}, blue); // torso
-    part({0, 0.77f, 0}, {0.18f, 0.06f, 0.30f}, dark); // neck
-    part({0, 0.90f, 0}, {0.46f, 0.20f, 0.60f}, gray); // head: top = height
+    if (!firstPersonView)
+    {
+        part({0, 0.77f, 0}, {0.18f, 0.06f, 0.30f}, dark); // neck
+        part({0, 0.90f, 0}, {0.46f, 0.20f, 0.60f}, gray); // head
+    }
     for (float side : {-1.0f, 1.0f})
     {
         part({side * 0.41f, 0.56f, 0}, {0.18f, 0.32f, 0.48f}, gray); // arms
         part({side * 0.17f, 0.24f, 0}, {0.22f, 0.32f, 0.45f}, gray); // legs
         part({side * 0.17f, 0.04f, 0.15f}, {0.28f, 0.08f, 0.85f}, dark); // feet: bottom = 0
-        part({side * 0.12f, 0.92f, 0.315f}, {0.08f, 0.045f, 0.04f}, dark); // eyes on +Z
+        if (!firstPersonView)
+            part({side * 0.12f, 0.92f, 0.315f}, {0.08f, 0.045f, 0.04f}, dark); // eyes
     }
-    part({0, 0.59f, 0.34f}, {0.38f, 0.19f, 0.04f}, front); // front chest panel
+    part({0, 0.59f, 0.34f}, {0.38f, 0.19f, 0.04f}, front); // chest panel
 }
 
 // A unit latitude/longitude sphere, split into two color groups.
@@ -1131,7 +1146,7 @@ int main()
             if (playerView)
             {
                 playerLookYaw = glm::clamp(
-                    playerLookYaw + cameraHorizontal * cameraTurnSpeed * deltaTime,
+                    playerLookYaw - cameraHorizontal * cameraTurnSpeed * deltaTime,
                     glm::radians(-PLAYER_LOOK_MAX_YAW),
                     glm::radians(PLAYER_LOOK_MAX_YAW));
                 playerLookPitch = glm::clamp(
@@ -1193,6 +1208,17 @@ int main()
         const float elevationFramingScale = 1.0f + 0.4f * (elevationRatio - 1.0f);
         const float effectiveCameraDistance =
             cameraDistance * framingScale * elevationFramingScale;
+        // Preserve the centered overview at the default distance. As the user
+        // zooms closer, progressively target the robot so it remains visible
+        // even near either end of the court.
+        const float playerFollowAmount = glm::clamp(
+            (DEFAULT_CAMERA_DISTANCE - cameraDistance)
+                / (DEFAULT_CAMERA_DISTANCE - CAMERA_MIN_DISTANCE),
+            0.0f, 1.0f);
+        const glm::vec3 birdCameraTarget = glm::mix(
+            CAMERA_TARGET,
+            glm::vec3(robotPosition.x, CAMERA_TARGET.y, robotPosition.z),
+            playerFollowAmount);
         glm::vec3 cameraPosition;
         glm::mat4 view;
         if (playerView)
@@ -1216,9 +1242,9 @@ int main()
                 effectiveCameraDistance * std::cos(cameraElevation) * std::sin(cameraAzimuth),
                 effectiveCameraDistance * std::sin(cameraElevation),
                 effectiveCameraDistance * std::cos(cameraElevation) * std::cos(cameraAzimuth));
-            cameraPosition = CAMERA_TARGET + cameraOffset;
+            cameraPosition = birdCameraTarget + cameraOffset;
             view = glm::lookAt(
-                cameraPosition, CAMERA_TARGET, glm::vec3(0, 1, 0));
+                cameraPosition, birdCameraTarget, glm::vec3(0, 1, 0));
         }
         glUniformMatrix4fv(viewLocation, 1, GL_FALSE, glm::value_ptr(view));
         glUniform3fv(viewPositionLocation, 1, glm::value_ptr(cameraPosition));
@@ -1250,10 +1276,9 @@ int main()
                  glm::vec3(1.0f), false, 0.72f, 0.04f, 16.0f);
         drawGoal(COURT_MIN_Z, cubeFirst, modelLocation, colorLocation);
         drawGoal(COURT_MAX_Z, cubeFirst, modelLocation, colorLocation);
-        // The first-person camera is mounted at the robot's head. Hiding the
-        // local robot prevents its face and body from clipping into that view.
-        if (!playerView)
-            drawRobot(cubeFirst, modelLocation, colorLocation);
+        // First-person view hides only the head/neck around the camera; every
+        // other body part remains visible when it enters the viewing frustum.
+        drawRobot(cubeFirst, modelLocation, colorLocation, playerView);
         glm::mat4 ballModel = glm::translate(glm::mat4(1.0f), ballPosition);
         ballModel *= glm::mat4_cast(ballOrientation);
         ballModel = glm::scale(ballModel, glm::vec3(BALL_RADIUS));
