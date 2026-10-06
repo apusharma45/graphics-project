@@ -156,6 +156,13 @@ const glm::vec3 LIGHT_POSITIONS[] = {
     {-9.0f, 8.0f, -17.0f}, {9.0f, 8.0f, -17.0f},
     {-9.0f, 8.0f,  17.0f}, {9.0f, 8.0f,  17.0f}
 };
+// The spotlight starts at the front of the robot's head and points ahead with
+// a slight downward tilt, so moving or turning the robot also moves the beam.
+constexpr float HEAD_SPOTLIGHT_HEIGHT = 2.88f;
+constexpr float HEAD_SPOTLIGHT_FORWARD_OFFSET = 0.36f;
+constexpr float HEAD_SPOTLIGHT_DOWN_ANGLE = 18.0f;
+constexpr float HEAD_SPOTLIGHT_INNER_ANGLE = 12.0f;
+constexpr float HEAD_SPOTLIGHT_OUTER_ANGLE = 22.0f;
 constexpr float BOARD_OFFSET = 2.0f;
 constexpr float BOARD_HEIGHT = 0.45f;
 constexpr float BOARD_THICKNESS = 0.20f;
@@ -482,7 +489,7 @@ void drawCube(int cubeFirst, int modelLocation, int colorLocation,
 }
 
 void drawRobot(int cubeFirst, int modelLocation, int colorLocation,
-               bool firstPersonView = false)
+               bool firstPersonView = false, bool headSpotlightEnabled = true)
 {
     glm::mat4 root = glm::translate(glm::mat4(1.0f), robotPosition);
     root = glm::rotate(root, robotYaw, glm::vec3(0.0f, 1.0f, 0.0f));
@@ -503,6 +510,14 @@ void drawRobot(int cubeFirst, int modelLocation, int colorLocation,
     {
         part({0, 0.77f, 0}, {0.18f, 0.06f, 0.30f}, dark); // neck
         part({0, 0.90f, 0}, {0.46f, 0.20f, 0.60f}, gray); // head
+
+        glm::mat4 headlamp = glm::translate(
+            root, glm::vec3(0.0f, HEAD_SPOTLIGHT_HEIGHT,
+                            HEAD_SPOTLIGHT_FORWARD_OFFSET));
+        headlamp = glm::scale(headlamp, glm::vec3(0.18f, 0.10f, 0.05f));
+        drawMesh(cubeFirst, 36, modelLocation, colorLocation, headlamp,
+                 headSpotlightEnabled ? glm::vec3(1.0f, 0.90f, 0.45f) : dark,
+                 headSpotlightEnabled);
     }
     for (float side : {-1.0f, 1.0f})
     {
@@ -782,7 +797,8 @@ int main()
               << "\nRenderer: " << glGetString(GL_RENDERER)
               << "\nI/K: move | J/L: turn | D: dribble mode | Space: shoot"
               << " | P: player view | Arrows: turn/elevate | Z/X: zoom | R: reset view"
-              << "\n1: ambient | 2: ambient + diffuse | 3: full Gouraud lighting | Escape: exit\n"
+              << "\n1: ambient | 2: ambient + diffuse | 3: full Gouraud lighting"
+              << " | H: head spotlight | Escape: exit\n"
               << std::flush;
 
     // Field: 20 units along X, 40 along Z, with Y pointing up.
@@ -851,6 +867,11 @@ int main()
         uniform mat4 projection;
         uniform vec3 objectColor;
         uniform vec3 lightPositions[4];
+        uniform vec3 headSpotlightPosition;
+        uniform vec3 headSpotlightDirection;
+        uniform float headSpotlightInnerCutoff;
+        uniform float headSpotlightOuterCutoff;
+        uniform bool headSpotlightEnabled;
         uniform vec3 viewPosition;
         uniform int lightingMode;
         uniform bool emissive;
@@ -896,6 +917,41 @@ int main()
                         vec3 R = reflect(-L, N);
                         float highlight = pow(max(dot(R, V), 0.0), shininess);
                         specular += vec3(specularStrength * attenuation * highlight);
+                    }
+                }
+
+                if (headSpotlightEnabled)
+                {
+                    vec3 spotToVertex = worldPosition.xyz - headSpotlightPosition;
+                    float spotDistance = length(spotToVertex);
+                    vec3 fromSpot = spotToVertex / max(spotDistance, 0.0001);
+                    float coneAngle = dot(
+                        fromSpot, normalize(headSpotlightDirection));
+                    float coneIntensity = smoothstep(
+                        headSpotlightOuterCutoff,
+                        headSpotlightInnerCutoff,
+                        coneAngle);
+
+                    if (coneIntensity > 0.0)
+                    {
+                        vec3 L = -fromSpot;
+                        float attenuation = 1.0 /
+                            (1.0 + 0.05 * spotDistance
+                                 + 0.012 * spotDistance * spotDistance);
+                        float diffuseAmount = max(dot(N, L), 0.0);
+                        vec3 spotColor = vec3(1.0, 0.92, 0.68);
+                        float spotStrength = 2.2 * coneIntensity * attenuation;
+                        diffuse += diffuseStrength * spotStrength
+                                 * diffuseAmount * objectColor * spotColor;
+
+                        if (diffuseAmount > 0.0)
+                        {
+                            vec3 R = reflect(-L, N);
+                            float highlight = pow(
+                                max(dot(R, V), 0.0), shininess);
+                            specular += spotColor * specularStrength
+                                      * spotStrength * highlight;
+                        }
                     }
                 }
 
@@ -1075,6 +1131,8 @@ int main()
     float playerLookPitch = glm::radians(DEFAULT_PLAYER_LOOK_PITCH);
     float playerCameraFov = PLAYER_CAMERA_FOV;
     int lightingMode = 3;
+    bool headSpotlightEnabled = false;
+    bool headSpotlightKeyWasDown = false;
 
     glUseProgram(shaderProgram);
     glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"),
@@ -1085,6 +1143,12 @@ int main()
     const int colorLocation = glGetUniformLocation(shaderProgram, "objectColor");
     const int viewPositionLocation = glGetUniformLocation(shaderProgram, "viewPosition");
     const int lightingModeLocation = glGetUniformLocation(shaderProgram, "lightingMode");
+    const int headSpotlightPositionLocation =
+        glGetUniformLocation(shaderProgram, "headSpotlightPosition");
+    const int headSpotlightDirectionLocation =
+        glGetUniformLocation(shaderProgram, "headSpotlightDirection");
+    const int headSpotlightEnabledLocation =
+        glGetUniformLocation(shaderProgram, "headSpotlightEnabled");
     emissiveLocation = glGetUniformLocation(shaderProgram, "emissive");
     diffuseStrengthLocation = glGetUniformLocation(shaderProgram, "diffuseStrength");
     specularStrengthLocation = glGetUniformLocation(shaderProgram, "specularStrength");
@@ -1093,6 +1157,10 @@ int main()
     glUniform1i(glGetUniformLocation(shaderProgram, "surfaceTexture"), 0);
     glUniform3fv(glGetUniformLocation(shaderProgram, "lightPositions[0]"),
                  4, glm::value_ptr(LIGHT_POSITIONS[0]));
+    glUniform1f(glGetUniformLocation(shaderProgram, "headSpotlightInnerCutoff"),
+                std::cos(glm::radians(HEAD_SPOTLIGHT_INNER_ANGLE)));
+    glUniform1f(glGetUniformLocation(shaderProgram, "headSpotlightOuterCutoff"),
+                std::cos(glm::radians(HEAD_SPOTLIGHT_OUTER_ANGLE)));
 
     double previousTime = glfwGetTime();
     int displayedScore = positiveGoalScore + negativeGoalScore;
@@ -1185,6 +1253,11 @@ int main()
             if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) lightingMode = 1;
             if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) lightingMode = 2;
             if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) lightingMode = 3;
+            const bool headSpotlightKeyDown =
+                glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS;
+            if (headSpotlightKeyDown && !headSpotlightKeyWasDown)
+                headSpotlightEnabled = !headSpotlightEnabled;
+            headSpotlightKeyWasDown = headSpotlightKeyDown;
             if (displayedScore != positiveGoalScore + negativeGoalScore)
             {
                 glfwSetWindowTitle(window, scoreTitle().c_str());
@@ -1196,6 +1269,8 @@ int main()
             spaceWasDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
             dribbleKeyWasDown = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
             playerViewKeyWasDown = glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS;
+            headSpotlightKeyWasDown =
+                glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS;
         }
         glViewport(0, 0, width, height);
         const float aspect = static_cast<float>(width) / height;
@@ -1249,6 +1324,21 @@ int main()
         glUniformMatrix4fv(viewLocation, 1, GL_FALSE, glm::value_ptr(view));
         glUniform3fv(viewPositionLocation, 1, glm::value_ptr(cameraPosition));
         glUniform1i(lightingModeLocation, lightingMode);
+        const glm::vec3 robotForward(
+            std::sin(robotYaw), 0.0f, std::cos(robotYaw));
+        const glm::vec3 headSpotlightPosition = robotPosition
+            + robotForward * HEAD_SPOTLIGHT_FORWARD_OFFSET
+            + glm::vec3(0.0f, HEAD_SPOTLIGHT_HEIGHT, 0.0f);
+        const float spotlightPitch = glm::radians(HEAD_SPOTLIGHT_DOWN_ANGLE);
+        const glm::vec3 headSpotlightDirection = glm::normalize(
+            robotForward * std::cos(spotlightPitch)
+            + glm::vec3(0.0f, -std::sin(spotlightPitch), 0.0f));
+        glUniform3fv(headSpotlightPositionLocation, 1,
+                     glm::value_ptr(headSpotlightPosition));
+        glUniform3fv(headSpotlightDirectionLocation, 1,
+                     glm::value_ptr(headSpotlightDirection));
+        glUniform1i(headSpotlightEnabledLocation,
+                    headSpotlightEnabled ? 1 : 0);
         const glm::mat4 projection = glm::perspective(
             glm::radians(playerView ? playerCameraFov : CAMERA_FOV),
             aspect, 0.1f, 200.0f);
@@ -1278,7 +1368,8 @@ int main()
         drawGoal(COURT_MAX_Z, cubeFirst, modelLocation, colorLocation);
         // First-person view hides only the head/neck around the camera; every
         // other body part remains visible when it enters the viewing frustum.
-        drawRobot(cubeFirst, modelLocation, colorLocation, playerView);
+        drawRobot(cubeFirst, modelLocation, colorLocation,
+                  playerView, headSpotlightEnabled);
         glm::mat4 ballModel = glm::translate(glm::mat4(1.0f), ballPosition);
         ballModel *= glm::mat4_cast(ballOrientation);
         ballModel = glm::scale(ballModel, glm::vec3(BALL_RADIUS));

@@ -2,6 +2,9 @@
 /build/
 /cmake-build-*/
 /out/
+/images
+/videos
+/report-and-presentation
 
 # Compiled binaries and object files
 *.exe
@@ -21,4 +24,5 @@ Thumbs.db
 
 prompt.md
 Agents.md
+commands.txt
 *.docx
